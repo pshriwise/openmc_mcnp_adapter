@@ -13,7 +13,8 @@ from openmc.data.ace import get_metadata
 from openmc.model.surface_composite import (
     CompositeSurface,
     RightCircularCylinder as RCC,
-    RectangularParallelepiped as RPP
+    RectangularParallelepiped as RPP,
+    RightHexagonalPrism as RHP
 )
 from openmc.model import surface_composite
 
@@ -24,10 +25,16 @@ from .parse import parse, _COMPLEMENT_RE, _CELL_FILL_RE
 # attribute name and whether or not to flip the sense of that surface
 # based on the facet surface's relationship to the composite surface region
 __MACROBODY_FACETS_ = \
-{
- RCC: {1: ('cyl', False), 2: ('top', False), 3 : ('bottom', True)},
- RPP: {1: ('xmin', True), 2: ('xmax', False), 3: ('ymin', True), 4: ('ymax', False), 5: ('zmin', True), 6: ('zmax', False)}
+{RCC: {1: ('cyl', False), 2: ('top', False), 3 : ('bottom', True)},
+ RPP: {1: ('xmin', True), 2: ('xmax', False), 3: ('ymin', True), 4: ('ymax', False), 5: ('zmin', True), 6: ('zmax', False)},
+ RHP: {'x':
+       {1: ('plane_max', False), 2: ('plane_min', True), 3: ('upper_left', False), 4: ('lower_right', True), 5: ('lower_left', True), 6: ('upper_right', False)},
+       'y':
+       {1: ('plane_max', False), 2: ('plane_min', True), 3: ('upper_right', False), 4: ('lower_left', True), 5: ('upper_left', False), 6: ('lower_right', True)},
+       }
 }
+__MACROBODY_FACETS_[RHP]['x'].update({7: ('upper_z', False), 8: ('lower_z', True)})
+__MACROBODY_FACETS_[RHP]['y'].update({7: ('upper_z', False), 8: ('lower_z', True)})
 
 
 def get_openmc_materials(materials):
@@ -257,6 +264,41 @@ def get_openmc_surfaces(surfaces, data):
             elif len(coeffs) != 12:
                 raise NotImplementedError('BOX macrobody should have 12 coefficients')
             surf = surface_composite.Box(coeffs[:3], coeffs[3:6], coeffs[6:9], coeffs[9:])
+        elif s['mnemonic'] == 'rhp':
+            if len(coeffs) > 9:
+                raise NotImplementedError('RHP with different facet vectors not supported')
+            org_x = coeffs[0]
+            org_y = coeffs[1]
+            lower_z = coeffs[2]
+
+            if coeffs[3] != 0. or coeffs[4] != 0.:
+                raise NotImplementedError('Off-axis RHP is not supported')
+            upper_z = lower_z + coeffs[5]
+
+            # the vectors to the center of the facets are required to be the same length for now
+            vec = coeffs[-3:]
+
+            if vec[2] != 0.:
+                raise NotImplementedError('RHP with off-axis face vector not supported')
+
+            if vec[0] !=0. and vec[1] != 0.:
+                raise NotImplementedError('Off-axis RHP is not supported')
+
+            orientation = 'x' if vec[0] == 0.0 else 'y'
+
+            if any(vec < 0.):
+                warnings.warn('RHP vector contains negative values.'
+                              'Macrobody facet references for this '
+                              'surface are no longer reliable.')
+
+            vec_length = np.linalg.norm(vec)
+            edge_length = 2 * vec_length / np.sqrt(3)
+
+            surf = RHP(edge_length=edge_length,
+                       orientation=orientation,
+                       origin=(org_x, org_y),
+                       lower_z=lower_z,
+                       upper_z=upper_z)
         else:
             raise NotImplementedError('Surface type "{}" not supported'
                                       .format(s['mnemonic']))
@@ -431,7 +473,6 @@ def get_openmc_universes(cells, surfaces, materials, data):
             if not trcl.startswith('('):
                 raise NotImplementedError(
                     'TRn card not supported (cell {}).'.format(c['id']))
-
             # Drop parentheses
             trcl = trcl[1:-1].split()
 
